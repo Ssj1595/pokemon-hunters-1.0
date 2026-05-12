@@ -47,63 +47,77 @@ async function getAdminCreds() {
   }
 }
 
-window.useAdminAuth = function () {
+window.useAdminAuth = function() {
   const [isAdmin, setIsAdmin] = _useState(false);
   const [ready, setReady] = _useState(false);
 
   _useEffect(() => {
-    try {
-      const s = JSON.parse(
-        localStorage.getItem(SESSION_KEY) || "null"
-      );
+    (async () => {
+      try {
+        const s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
 
-      if (
-        s &&
-        s.loggedIn &&
-        (!s.expires || s.expires > Date.now())
-      ) {
-        setIsAdmin(true);
-      }
-    } catch {}
+        if (
+          s &&
+          s.loggedIn &&
+          (!s.expires || s.expires > Date.now())
+        ) {
+          setIsAdmin(true);
+        }
+      } catch {}
 
-    setReady(true);
+      setReady(true);
+    })();
   }, []);
 
   const login = _useCallback(async (userId, password) => {
-    const creds = await getAdminCreds();
+    try {
+      
+      const cleanUserId = userId.trim().toUpperCase();
 
-    if (!creds) {
-      return {
-        ok: false,
-        error: "Unable to load admin credentials",
-      };
-    }
+      const { data, error } = await supabaseClient
+        .from("admin_auth")
+        .select("*")
+        .eq("user_id", cleanUserId)
+        .single();
 
-    if (
-      userId === creds.user_id &&
-      password === creds.password_hash
-    ) {
+      if (error || !data) {
+        return {
+          ok: false,
+          error: "Invalid credentials"
+        };
+      }
+
+      const hash = await sha256(password);
+
+      if (hash !== data.pass_hash) {
+        return {
+          ok: false,
+          error: "Invalid credentials"
+        };
+      }
+
       const session = {
         loggedIn: true,
-        expires: Date.now() + 1000 * 60 * 60 * 24 * 7,
+        expires: Date.now() + 1000 * 60 * 60 * 24 * 7
       };
 
-      try {
-        localStorage.setItem(
-          SESSION_KEY,
-          JSON.stringify(session)
-        );
-      } catch {}
+      localStorage.setItem(
+        SESSION_KEY,
+        JSON.stringify(session)
+      );
 
       setIsAdmin(true);
 
       return { ok: true };
-    }
 
-    return {
-      ok: false,
-      error: "Invalid credentials",
-    };
+    } catch (err) {
+      console.error(err);
+
+      return {
+        ok: false,
+        error: "Unable to load admin credentials"
+      };
+    }
   }, []);
 
   const logout = _useCallback(() => {
@@ -114,68 +128,183 @@ window.useAdminAuth = function () {
     setIsAdmin(false);
   }, []);
 
-  const changePassword = _useCallback(
-    async (current, next) => {
-      const creds = await getAdminCreds();
+  const changePassword = _useCallback(async (current, next) => {
 
-      if (!creds) {
+    try {
+
+      const { data, error } = await supabaseClient
+        .from("admin_auth")
+        .select("*")
+        .eq("user_id", DEFAULT_USERID)
+        .single();
+
+      if (error || !data) {
         return {
           ok: false,
-          error: "Unable to load credentials",
+          error: "Admin account not found"
         };
       }
 
-      if (current !== creds.password_hash) {
+      const curHash = await sha256(current);
+
+      if (curHash !== data.pass_hash) {
         return {
           ok: false,
-          error: "Current password incorrect",
+          error: "Current password is incorrect"
         };
       }
 
       if (!next || next.length < 4) {
         return {
           ok: false,
-          error:
-            "New password must be at least 4 characters",
+          error: "New password must be at least 4 characters"
         };
       }
 
-      try {
-        const res = await fetch(
-          `${SUPABASE_URL}/rest/v1/admin_auth?id=eq.${creds.id}`,
-          {
-            method: "PATCH",
-            headers: {
-              apikey: SUPABASE_ANON_KEY,
-              Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-              "Content-Type": "application/json",
-              Prefer: "return=minimal",
-            },
-            body: JSON.stringify({
-              password_hash: next,
-            }),
-          }
-        );
+      const newHash = await sha256(next);
 
-        if (!res.ok) {
-          return {
-            ok: false,
-            error: "Failed to update password",
-          };
-        }
+      const { error: updateError } = await supabaseClient
+        .from("admin_auth")
+        .update({
+          pass_hash: newHash
+        })
+        .eq("user_id", DEFAULT_USERID);
 
-        return { ok: true };
-      } catch (err) {
-        console.error(err);
-
+      if (updateError) {
         return {
           ok: false,
-          error: "Something went wrong",
+          error: "Failed to update password"
         };
       }
-    },
-    []
-  );
+
+      return { ok: true };
+
+    } catch (err) {
+      console.error(err);
+
+      return {
+        ok: false,
+        error: "Password update failed"
+      };
+    }
+
+  }, []);
+
+  const requestReset = _useCallback(async (email) => {
+
+    const e = (email || "").trim().toLowerCase();
+
+    if (!ALLOWED_EMAILS.includes(e)) {
+      return {
+        ok: false,
+        error: "This email is not authorised for password resets."
+      };
+    }
+
+    const code = String(
+      Math.floor(100000 + Math.random() * 900000)
+    );
+
+    const codeHash = await sha256(code);
+
+    const ticket = {
+      email: e,
+      codeHash,
+      expires: Date.now() + 1000 * 60 * 15
+    };
+
+    try {
+      localStorage.setItem(
+        RESET_KEY,
+        JSON.stringify(ticket)
+      );
+    } catch {}
+
+    return {
+      ok: true,
+      email: e,
+      code
+    };
+
+  }, []);
+
+  const completeReset = _useCallback(async (
+    email,
+    code,
+    newPass
+  ) => {
+
+    let t = null;
+
+    try {
+      t = JSON.parse(
+        localStorage.getItem(RESET_KEY) || "null"
+      );
+    } catch {}
+
+    if (!t) {
+      return {
+        ok: false,
+        error: "No reset request found. Start again."
+      };
+    }
+
+    if (t.expires < Date.now()) {
+      return {
+        ok: false,
+        error: "Reset code expired. Start again."
+      };
+    }
+
+    if (
+      t.email !==
+      (email || "").trim().toLowerCase()
+    ) {
+      return {
+        ok: false,
+        error: "Email does not match request."
+      };
+    }
+
+    const codeHash = await sha256(code);
+
+    if (codeHash !== t.codeHash) {
+      return {
+        ok: false,
+        error: "Incorrect reset code."
+      };
+    }
+
+    if (!newPass || newPass.length < 4) {
+      return {
+        ok: false,
+        error: "New password must be at least 4 characters."
+      };
+    }
+
+    const newHash = await sha256(newPass);
+
+    const { error } = await supabaseClient
+      .from("admin_auth")
+      .update({
+        pass_hash: newHash
+      })
+      .eq("user_id", DEFAULT_USERID);
+
+    if (error) {
+      return {
+        ok: false,
+        error: "Failed to reset password"
+      };
+    }
+
+    try {
+      localStorage.removeItem(RESET_KEY);
+    } catch {}
+
+    return { ok: true };
+
+  }, []);
 
   return {
     isAdmin,
@@ -183,6 +312,8 @@ window.useAdminAuth = function () {
     login,
     logout,
     changePassword,
+    requestReset,
+    completeReset
   };
 };
 

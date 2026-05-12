@@ -11,63 +11,94 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "photosFirst": true
 } /*EDITMODE-END*/;
 
-const STORAGE_KEY = "ph_uploaded_images_v2"; // arrays now
-
-// Migration: v1 (single dataurl) → v2 (array)
-function migrateUploads() {
-  try {
-    const v2 = localStorage.getItem(STORAGE_KEY);
-    if (v2) return JSON.parse(v2);
-    const v1raw = localStorage.getItem("ph_uploaded_images_v1");
-    if (v1raw) {
-      const v1 = JSON.parse(v1raw);
-      const out = {};
-      Object.keys(v1).forEach((k) => {out[k] = [v1[k]];});
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
-      return out;
-    }
-  } catch {}
-  return {};
-}
-
 function useUploads() {
-  const [uploads, setUploads] = useState(migrateUploads);
-  const addPhoto = useCallback((num, dataUrl) => {
-    setUploads((prev) => {
-      const cur = prev[num] || [];
-      if (cur.length >= 5) return prev;
-      const next = { ...prev, [num]: [...cur, dataUrl] };
-      try {localStorage.setItem(STORAGE_KEY, JSON.stringify(next));} catch {}
-      return next;
-    });
+  const [uploads, setUploads] = useState({});
+
+  useEffect(() => {
+    loadBirds();
   }, []);
-  const removePhoto = useCallback((num, idx) => {
-    setUploads((prev) => {
-      const cur = prev[num] || [];
-      const arr = cur.filter((_, i) => i !== idx);
-      const next = { ...prev };
-      if (arr.length) next[num] = arr;else delete next[num];
-      try {localStorage.setItem(STORAGE_KEY, JSON.stringify(next));} catch {}
-      return next;
+
+  async function loadBirds() {
+    const { data, error } = await supabaseClient
+      .from("birds")
+      .select("*");
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    const mapped = {};
+
+    data.forEach((bird) => {
+      mapped[bird.num] = bird.photos || [];
     });
-  }, []);
-  const clearAll = useCallback((num) => {
-    setUploads((prev) => {
-      const next = { ...prev };delete next[num];
-      try {localStorage.setItem(STORAGE_KEY, JSON.stringify(next));} catch {}
-      return next;
-    });
-  }, []);
-  const setPhotos = useCallback((num, arr) => {
-    setUploads((prev) => {
-      const next = { ...prev };
-      if (arr && arr.length) next[num] = arr.slice(0, 5);else delete next[num];
-      try {localStorage.setItem(STORAGE_KEY, JSON.stringify(next));} catch {}
-      return next;
-    });
-  }, []);
-  return [uploads, addPhoto, removePhoto, clearAll, setPhotos];
+
+    setUploads(mapped);
+  }
+
+  const addPhoto = useCallback(async (num, file) => {
+    try {
+      const filename = `${Date.now()}-${file.name}`;
+
+      const { error: uploadError } = await supabaseClient
+        .storage
+        .from("bird-images")
+        .upload(filename, file);
+
+      if (uploadError) {
+        console.error(uploadError);
+        return;
+      }
+
+      const { data } = supabaseClient
+        .storage
+        .from("bird-images")
+        .getPublicUrl(filename);
+
+      const imageUrl = data.publicUrl;
+
+      const current = uploads[num] || [];
+      const updated = [...current, imageUrl];
+
+      await supabaseClient
+        .from("birds")
+        .upsert({
+          num,
+          photos: updated
+        });
+
+      setUploads(prev => ({
+        ...prev,
+        [num]: updated
+      }));
+
+    } catch (err) {
+      console.error(err);
+    }
+  }, [uploads]);
+
+  const removePhoto = useCallback(async (num, idx) => {
+    const current = uploads[num] || [];
+
+    const updated = current.filter((_, i) => i !== idx);
+
+    await supabaseClient
+      .from("birds")
+      .upsert({
+        num,
+        photos: updated
+      });
+
+    setUploads(prev => ({
+      ...prev,
+      [num]: updated
+    }));
+  }, [uploads]);
+
+  return [uploads, addPhoto, removePhoto];
 }
+
 
 function Badge({ kind, value }) {
   let emoji = "";
@@ -95,15 +126,16 @@ function CarouselPhoto({ bird, photos, onAdd, onRemoveIdx, onZoom, canEdit }) {
   useEffect(() => {if (idx >= (photos?.length || 0)) setIdx(0);}, [photos, idx]);
 
   const handlePick = (e) => {e.stopPropagation();fileRef.current?.click();};
-  const handleFile = (e) => {
-    const files = e.target.files;if (!files) return;
-    Array.from(files).forEach((f) => {
-      const r = new FileReader();
-      r.onload = () => onAdd(String(r.result));
-      r.readAsDataURL(f);
-    });
-    e.target.value = "";
-  };
+  const handleFile = async (e) => {
+  const files = e.target.files;
+  if (!files) return;
+
+  Array.from(files).forEach(f => {
+    onAdd(f);
+  });
+
+  e.target.value = "";
+};
   const prev = (e) => {e.stopPropagation();setIdx((i) => (i - 1 + photos.length) % photos.length);};
   const next = (e) => {e.stopPropagation();setIdx((i) => (i + 1) % photos.length);};
 
