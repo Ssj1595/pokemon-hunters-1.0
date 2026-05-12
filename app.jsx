@@ -1,5 +1,5 @@
 /* global React, ReactDOM, BIRD_DATA, HABITAT_META, BEHAVIOR_META, REGION_META, BIRD_IMAGES, RARITY_META, STAT_META */
-const { useState, useEffect, useMemo, useRef, useCallback } = React;  
+const { useState, useEffect, useMemo, useRef, useCallback } = React;   
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "heroTitle": "Pokémon Hunters\n",
@@ -38,25 +38,48 @@ function useUploads() {
   // num is not the primary key so upsert can't auto-detect conflicts on it.
   // We do a manual select → update/insert to avoid duplicate rows.
   async function saveBirdPhotos(num, photos) {
-    const { data: existing } = await supabaseClient
-      .from("birds")
-      .select("id")
-      .eq("num", num)
-      .single();
 
-    if (existing) {
-      const { error } = await supabaseClient
+  const { data: existing, error: selectError } =
+    await supabaseClient
+      .from("birds")
+      .select("*")
+      .eq("num", num)
+      .maybeSingle();
+
+  if (selectError) {
+    console.error("Select error:", selectError);
+    throw selectError;
+  }
+
+  if (existing) {
+
+    const { error: updateError } =
+      await supabaseClient
         .from("birds")
         .update({ photos })
         .eq("num", num);
-      if (error) throw error;
-    } else {
-      const { error } = await supabaseClient
+
+    if (updateError) {
+      console.error("Update error:", updateError);
+      throw updateError;
+    }
+
+  } else {
+
+    const { error: insertError } =
+      await supabaseClient
         .from("birds")
-        .insert({ num, photos });
-      if (error) throw error;
+        .insert({
+          num,
+          photos
+        });
+
+    if (insertError) {
+      console.error("Insert error:", insertError);
+      throw insertError;
     }
   }
+}
 
   const addPhoto = useCallback(async (num, file) => {
     try {
