@@ -64,7 +64,7 @@ function useUploads() {
 
       const { error: uploadError } = await supabaseClient
         .storage
-        .from("bird-images")
+        .from("bird_images")
         .upload(filename, file);
 
       if (uploadError) {
@@ -75,7 +75,7 @@ function useUploads() {
 
       const { data } = supabaseClient
         .storage
-        .from("bird-images")
+        .from("bird_images")
         .getPublicUrl(filename);
 
       const imageUrl = data.publicUrl;
@@ -124,7 +124,7 @@ function useUploads() {
 
         const { error: uploadError } = await supabaseClient
           .storage
-          .from("bird-images")
+          .from("bird_images")
           .upload(filename, blob);
 
         if (uploadError) {
@@ -134,7 +134,7 @@ function useUploads() {
 
         const { data } = supabaseClient
           .storage
-          .from("bird-images")
+          .from("bird_images")
           .getPublicUrl(filename);
 
         return data.publicUrl;
