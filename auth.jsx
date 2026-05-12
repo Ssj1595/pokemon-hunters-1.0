@@ -88,6 +88,13 @@ window.useAdminAuth = function() {
       }
 
       const hash = await sha256(password);
+      
+
+      console.log("INPUT USER:", cleanUserId);
+console.log("DB USER:", data.user_id);
+
+console.log("INPUT HASH:", hash);
+console.log("DB HASH:", data.pass_hash);
 
       if (hash !== data.pass_hash) {
         return {
