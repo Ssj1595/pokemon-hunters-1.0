@@ -6,12 +6,6 @@ const {
   useCallback: _useCallback
 } = React;
 
-const SUPABASE_URL =
-  "https://hordrkpxsfcnvfjbzzdb.supabase.co";
-
-const SUPABASE_ANON_KEY =
-  "sb_publishable_v37mf5VzanKEEKB9RbxMMA_qvZQaUFZ";
-
 const SESSION_KEY = "ph_admin_session_v1";
 
 const ALLOWED_EMAILS = Object.freeze([
@@ -104,8 +98,9 @@ console.log("DB HASH:", data.pass_hash);
       }
 
       const session = {
-        loggedIn: true,
-        expires: Date.now() + 1000 * 60 * 60 * 24 * 7
+          loggedIn: true,
+          userId: cleanUserId,
+          expires: Date.now() + 1000 * 60 * 60 * 24 * 7
       };
 
       localStorage.setItem(
@@ -137,65 +132,78 @@ console.log("DB HASH:", data.pass_hash);
 
   const changePassword = _useCallback(async (current, next) => {
 
-    try {
+  try {
 
-      const { data, error } = await supabaseClient
-        .from("admin_auth")
-        .select("*")
-        .eq("user_id", DEFAULT_USERID)
-        .single();
+    const session = JSON.parse(
+      localStorage.getItem(SESSION_KEY) || "null"
+    );
 
-      if (error || !data) {
-        return {
-          ok: false,
-          error: "Admin account not found"
-        };
-      }
-
-      const curHash = await sha256(current);
-
-      if (curHash !== data.pass_hash) {
-        return {
-          ok: false,
-          error: "Current password is incorrect"
-        };
-      }
-
-      if (!next || next.length < 4) {
-        return {
-          ok: false,
-          error: "New password must be at least 4 characters"
-        };
-      }
-
-      const newHash = await sha256(next);
-
-      const { error: updateError } = await supabaseClient
-        .from("admin_auth")
-        .update({
-          pass_hash: newHash
-        })
-        .eq("user_id", DEFAULT_USERID);
-
-      if (updateError) {
-        return {
-          ok: false,
-          error: "Failed to update password"
-        };
-      }
-
-      return { ok: true };
-
-    } catch (err) {
-      console.error(err);
-
+    if (!session?.userId) {
       return {
         ok: false,
-        error: "Password update failed"
+        error: "Session expired"
       };
     }
 
-  }, []);
+    const currentUserId = session.userId;
+
+    const { data, error } = await supabaseClient
+      .from("admin_auth")
+      .select("*")
+      .eq("user_id", currentUserId)
+      .single();
+
+    if (error || !data) {
+      return {
+        ok: false,
+        error: "Admin account not found"
+      };
+    }
+
+    const curHash = await sha256(current);
+
+    if (curHash !== data.pass_hash) {
+      return {
+        ok: false,
+        error: "Current password is incorrect"
+      };
+    }
+
+    if (!next || next.length < 4) {
+      return {
+        ok: false,
+        error: "New password must be at least 4 characters"
+      };
+    }
+
+    const newHash = await sha256(next);
+
+    const { error: updateError } = await supabaseClient
+      .from("admin_auth")
+      .update({
+        pass_hash: newHash
+      })
+      .eq("user_id", currentUserId);
+
+    if (updateError) {
+      return {
+        ok: false,
+        error: "Failed to update password"
+      };
+    }
+
+    return { ok: true };
+
+  } catch (err) {
+    console.error(err);
+
+    return {
+      ok: false,
+      error: "Password update failed"
+    };
+  }
+
+}, []);
 
   const requestReset = _useCallback(async (email) => {
 
