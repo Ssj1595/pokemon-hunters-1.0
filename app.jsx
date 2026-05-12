@@ -24,17 +24,38 @@ function useUploads() {
       .select("*");
 
     if (error) {
-      console.error(error);
+      console.error("loadBirds error:", error);
       return;
     }
 
     const mapped = {};
-
     data.forEach((bird) => {
       mapped[bird.num] = bird.photos || [];
     });
-
     setUploads(mapped);
+  }
+
+  // num is not the primary key so upsert can't auto-detect conflicts on it.
+  // We do a manual select → update/insert to avoid duplicate rows.
+  async function saveBirdPhotos(num, photos) {
+    const { data: existing } = await supabaseClient
+      .from("birds")
+      .select("id")
+      .eq("num", num)
+      .single();
+
+    if (existing) {
+      const { error } = await supabaseClient
+        .from("birds")
+        .update({ photos })
+        .eq("num", num);
+      if (error) throw error;
+    } else {
+      const { error } = await supabaseClient
+        .from("birds")
+        .insert({ num, photos });
+      if (error) throw error;
+    }
   }
 
   const addPhoto = useCallback(async (num, file) => {
@@ -47,7 +68,8 @@ function useUploads() {
         .upload(filename, file);
 
       if (uploadError) {
-        console.error(uploadError);
+        console.error("Storage upload failed:", uploadError);
+        alert("Image upload failed: " + uploadError.message);
         return;
       }
 
@@ -57,16 +79,10 @@ function useUploads() {
         .getPublicUrl(filename);
 
       const imageUrl = data.publicUrl;
-
       const current = uploads[num] || [];
       const updated = [...current, imageUrl];
 
-      await supabaseClient
-        .from("birds")
-        .upsert({
-          num,
-          photos: updated
-        });
+      await saveBirdPhotos(num, updated);
 
       setUploads(prev => ({
         ...prev,
@@ -74,29 +90,73 @@ function useUploads() {
       }));
 
     } catch (err) {
-      console.error(err);
+      console.error("addPhoto error:", err);
+      alert("Failed to save photo: " + (err.message || err));
     }
   }, [uploads]);
 
   const removePhoto = useCallback(async (num, idx) => {
     const current = uploads[num] || [];
-
     const updated = current.filter((_, i) => i !== idx);
 
-    await supabaseClient
-      .from("birds")
-      .upsert({
-        num,
-        photos: updated
-      });
-
-    setUploads(prev => ({
-      ...prev,
-      [num]: updated
-    }));
+    try {
+      await saveBirdPhotos(num, updated);
+      setUploads(prev => ({
+        ...prev,
+        [num]: updated
+      }));
+    } catch (err) {
+      console.error("removePhoto error:", err);
+    }
   }, [uploads]);
 
-  return [uploads, addPhoto, removePhoto];
+  // Called when the edit form saves photos for a built-in bird.
+  // Any base64 data URLs (from the file picker) are uploaded to Storage first.
+  const setUploadPhotos = useCallback(async (num, photoArr) => {
+    try {
+      const resolved = await Promise.all(photoArr.map(async (photo) => {
+        if (!photo || !photo.startsWith("data:")) return photo;
+
+        const res = await fetch(photo);
+        const blob = await res.blob();
+        const ext = blob.type.split("/")[1] || "jpg";
+        const filename = `${Date.now()}-bird${num}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+        const { error: uploadError } = await supabaseClient
+          .storage
+          .from("bird-images")
+          .upload(filename, blob);
+
+        if (uploadError) {
+          console.error("Storage upload failed:", uploadError);
+          return photo;
+        }
+
+        const { data } = supabaseClient
+          .storage
+          .from("bird-images")
+          .getPublicUrl(filename);
+
+        return data.publicUrl;
+      }));
+
+      await saveBirdPhotos(num, resolved);
+      setUploads(prev => ({ ...prev, [num]: resolved }));
+    } catch (err) {
+      console.error("setUploadPhotos error:", err);
+    }
+  }, []);
+
+  const clearAllPhotos = useCallback(async (num) => {
+    try {
+      await saveBirdPhotos(num, []);
+      setUploads(prev => ({ ...prev, [num]: [] }));
+    } catch (err) {
+      console.error("clearAllPhotos error:", err);
+    }
+  }, []);
+
+  return [uploads, addPhoto, removePhoto, clearAllPhotos, setUploadPhotos];
 }
 
 
